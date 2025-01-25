@@ -285,7 +285,7 @@ class GradeCSVProcessor(DeferrableMixin, GradedSubsectionMixin, CSVProcessor):
         Create GradeCSVProcessor.
         """
         # First, set some default values.
-        self.columns = ['user_id', 'username', 'student_key', 'course_id', 'track', 'cohort']
+        self.columns = ['user_id', 'username', 'full_name', 'email', 'course_id', 'track', 'cohort']
         self.course_id = None
         self.subsection_grade_max = None
         self.subsection_grade_min = None
@@ -426,6 +426,8 @@ class GradeCSVProcessor(DeferrableMixin, GradedSubsectionMixin, CSVProcessor):
             cohort = get_cohort(enrollment['user'], self._course_key, assign=False)
             row = {
                 'user_id': enrollment['user_id'],
+                'full_name': enrollment['full_name'],
+                'email': enrollment['user'].email,
                 'username': enrollment['username'],
                 'student_key': enrollment['student_uid'] if enrollment['track'] == 'masters' else None,
                 'track': enrollment['track'],
