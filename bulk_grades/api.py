@@ -16,6 +16,7 @@ from lms.djangoapps.grades import api as grades_api
 from opaque_keys.edx.keys import CourseKey, UsageKey
 from openedx.core.djangoapps.course_groups.cohorts import get_cohort
 from super_csv.csv_processor import CSVProcessor, DeferrableMixin, ValidationError
+from custom_extensions.waffle import ENABLE_ABSOLUTE_GRADES_CSV  # Import the waffle switch
 
 from .clients import LearnerAPIClient
 from .models import ScoreOverrider
@@ -55,7 +56,7 @@ def _get_enrollments(course_id, track=None, cohort=None, active_only=False, excl
             "user": OuterRef('user'),
             "course_id": course_id
         }
-        if 'all' not in excluded_course_roles:
+        if excluded_course_roles != ['all']:
             course_access_role_filters['role__in'] = excluded_course_roles
         enrollments = enrollments.annotate(has_excluded_role=Exists(
             apps.get_model('student', 'CourseAccessRole').objects.filter(**course_access_role_filters)
@@ -452,6 +453,95 @@ class GradeCSVProcessor(DeferrableMixin, GradedSubsectionMixin, CSVProcessor):
         log.info(f"Filtered column headers for course {self.course_id}: {columns}")
         return columns
 
+class AbsoluteGradeCSVProcessor(GradeCSVProcessor):
+    """
+    CSV Processor for subsection grades with absolute scores.
+    """
+    def __init__(self, **kwargs):
+        """
+        Create AbsoluteGradeCSVProcessor.
+        """
+        super().__init__(**kwargs)
+        # Override columns to remove 'Percent(%)', 'Track', 'Cohort' and add subsection display names
+        self.columns = ['User ID', 'Username', 'Email', 'Full Name', 'Course ID']
+        self.append_columns(
+            [display_name for _, display_name in self._subsections.values()]
+        )
+        log.info(f"Initialized AbsoluteGradeCSVProcessor: course={self.course_id}, cohort={self.cohort}, "
+                 f"columns={self.columns}")
+
+    def get_rows_to_export(self):
+        """
+        Return iterator of rows to export with absolute scores.
+        """
+        try:
+            enrollments = list(_get_enrollments(
+                self._course_key,
+                track=self.track,
+                cohort=self.cohort,
+                active_only=self.active_only,
+                excluded_course_roles=['staff', 'instructor']
+            ))
+            log.info(f"Exporting {len(enrollments)} users for course {self._course_key}, cohort={self.cohort}, "
+                     f"columns={self.columns}")
+            if not enrollments:
+                log.warning(f"No enrollments found for course {self._course_key}, cohort={self.cohort}")
+            enrolled_users = [enroll['user'] for enroll in enrollments]
+
+            grades_api.prefetch_course_and_subsection_grades(self._course_key, enrolled_users)
+            for enrollment in enrollments:
+                row = {
+                    'User ID': enrollment['user_id'],
+                    'Username': enrollment['username'],
+                    'Email': enrollment['user'].email,
+                    'Full Name': enrollment['full_name'],
+                    'Course ID': self.course_id,
+                }
+
+                grades = grades_api.get_subsection_grades(enrollment['user_id'], self._course_key)
+                for short_id, (subsection, display_name) in self._subsections.items():
+                    subsection_grade = grades.get(subsection.location, None)
+                    if subsection_grade:
+                        if getattr(subsection_grade, 'override', None):
+                            score_earned = subsection_grade.override.earned_graded_override
+                            score_possible = subsection_grade.override.possible_graded_override
+                        else:
+                            score_earned = subsection_grade.earned_graded
+                            score_possible = subsection_grade.possible_graded
+                        row[display_name] = f"{int(score_earned)}/{int(score_possible)}" if score_possible > 0 else "0/0"
+                    else:
+                        row[display_name] = "0/0"
+
+                    if subsection_grade and (self.subsection_grade_min or self.subsection_grade_max):
+                        effective_grade = ((subsection_grade.override.earned_graded_override /
+                                            subsection_grade.override.possible_graded_override) * 100
+                                           if getattr(subsection_grade, 'override', None)
+                                           else (subsection_grade.earned_graded / subsection_grade.possible_graded) * 100
+                                          if subsection_grade.possible_graded > 0 else 0)
+                        if (self.subsection_grade_min and effective_grade < self.subsection_grade_min) or \
+                           (self.subsection_grade_max and effective_grade > self.subsection_grade_max):
+                            continue
+
+                course_grade = grades_api.CourseGradeFactory().read(enrollment['user'], course_key=self._course_key)
+                if self.course_grade_min or self.course_grade_max:
+                    course_grade_normalized = course_grade.percent * 100 if course_grade else 0
+                    if (self.course_grade_min and course_grade_normalized < self.course_grade_min) or \
+                       (self.course_grade_max and course_grade_normalized > self.course_grade_max):
+                        continue
+
+                yield row
+        except Exception as e:
+            log.error(f"Error in get_rows_to_export for course {self._course_key}, cohort={self.cohort}: {str(e)}")
+            raise
+
+    def filtered_column_headers(self):
+        """
+        Return filtered list of columns to export.
+        """
+        columns = self.columns.copy()
+        log.info(f"Filtered column headers for course {self.course_id}: {columns}")
+        return columns
+
 class InterventionCSVProcessor(GradedSubsectionMixin, CSVProcessor):
     """
     CSV Processor for intervention report grades for masters track only.
@@ -633,3 +723,9 @@ def get_scores(usage_key, user_ids=None):
         else:
             scores[row.student_id]['who_last_graded'] = last_override.user.username
     return scores
+
+# Log switch state and processor selection
+log.info(f"ENABLE_ABSOLUTE_GRADES_CSV is_enabled: {ENABLE_ABSOLUTE_GRADES_CSV.is_enabled()}")
+log.info(f"Selecting GradeCSVProcessor: {AbsoluteGradeCSVProcessor.__name__ if ENABLE_ABSOLUTE_GRADES_CSV.is_enabled() else GradeCSVProcessor.__name__}")
+GradeCSVProcessor = AbsoluteGradeCSVProcessor if ENABLE_ABSOLUTE_GRADES_CSV.is_enabled() else GradeCSVProcessor
+log.info(f"Selected GradeCSVProcessor: {GradeCSVProcessor.__name__}")
