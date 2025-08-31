@@ -16,7 +16,7 @@ from lms.djangoapps.grades import api as grades_api
 from opaque_keys.edx.keys import CourseKey, UsageKey
 from openedx.core.djangoapps.course_groups.cohorts import get_cohort
 from super_csv.csv_processor import CSVProcessor, DeferrableMixin, ValidationError
-from custom_extensions.waffle import ENABLE_ABSOLUTE_GRADES_CSV  # Import the waffle switch
+
 
 from .clients import LearnerAPIClient
 from .models import ScoreOverrider
@@ -724,8 +724,10 @@ def get_scores(usage_key, user_ids=None):
             scores[row.student_id]['who_last_graded'] = last_override.user.username
     return scores
 
-# Log switch state and processor selection
-log.info(f"ENABLE_ABSOLUTE_GRADES_CSV is_enabled: {ENABLE_ABSOLUTE_GRADES_CSV.is_enabled()}")
-log.info(f"Selecting GradeCSVProcessor: {AbsoluteGradeCSVProcessor.__name__ if ENABLE_ABSOLUTE_GRADES_CSV.is_enabled() else GradeCSVProcessor.__name__}")
-GradeCSVProcessor = AbsoluteGradeCSVProcessor if ENABLE_ABSOLUTE_GRADES_CSV.is_enabled() else GradeCSVProcessor
-log.info(f"Selected GradeCSVProcessor: {GradeCSVProcessor.__name__}")
+
+try:
+    from custom_extensions.waffle import ENABLE_ABSOLUTE_GRADES_CSV  # Import custom waffle switch
+    GradeCSVProcessor = AbsoluteGradeCSVProcessor if ENABLE_ABSOLUTE_GRADES_CSV.is_enabled() else GradeCSVProcessor
+except Exception as e:
+    log.error(f"Error in ENABLE_ABSOLUTE_GRADES_CSV.is_enabled(): {str(e)}")
+    GradeCSVProcessor = GradeCSVProcessor
