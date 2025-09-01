@@ -508,9 +508,9 @@ class AbsoluteGradeCSVProcessor(GradeCSVProcessor):
                         else:
                             score_earned = subsection_grade.earned_graded
                             score_possible = subsection_grade.possible_graded
-                        row[display_name] = f"{int(score_earned)}/{int(score_possible)}" if score_possible > 0 else "0/0"
+                        row[display_name] = f"{score_earned:.2f}/{score_possible:.2f}" if score_possible > 0 else "0.00/0.00"
                     else:
-                        row[display_name] = "0/0"
+                        row[display_name] = "0.00/0.00"
 
                     if subsection_grade and (self.subsection_grade_min or self.subsection_grade_max):
                         effective_grade = ((subsection_grade.override.earned_graded_override /
@@ -723,7 +723,6 @@ def get_scores(usage_key, user_ids=None):
         else:
             scores[row.student_id]['who_last_graded'] = last_override.user.username
     return scores
-
 
 try:
     from custom_extensions.waffle import ENABLE_ABSOLUTE_GRADES_CSV  # Import custom waffle switch
